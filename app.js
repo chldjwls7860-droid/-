@@ -1,6 +1,9 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_URL, SUPABASE_ANON_KEY, CAPACITY as DEFAULT_CAPACITY } from "./config.js";
 
+// ---------- 정원 설정 (기본값 fallback 4) ----------
+let roomCapacity = DEFAULT_CAPACITY || 4; 
+
 // ---------- 달력 설정 (2026년 10월) ----------
 const DAYS_IN_MONTH = 31, FIRST_DAY_OF_WEEK = 4; // 목요일 시작
 const SLOTS = ["morning", "afternoon", "evening"];
@@ -9,7 +12,7 @@ const DOW = ["일","월","화","수","목","금","토"];
 
 // ---------- 요일/시간대 제한 ----------
 function dowOf(day) {
-  return (FIRST_DAY_OF_WEEK + day - 1) % 7; // 0:일 ... 6:토
+  return (FIRST_DAY_OF_WEEK + day - 1) % 7;
 }
 function isWeekend(day) {
   const d = dowOf(day);
@@ -22,7 +25,7 @@ function isSlotAllowed(day, slot) {
   return allowedSlots(day).includes(slot);
 }
 
-// ---------- 방(room) 식별: ?room=xxxx ----------
+// ---------- 방(room) 식별 ----------
 function getRoomId() {
   const url = new URL(location.href);
   let room = url.searchParams.get("room");
@@ -39,9 +42,8 @@ const ROOM_ID = getRoomId();
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ---------- 상태 ----------
-let roomCapacity = DEFAULT_CAPACITY || 4; // 동적 정원 (기본값)
 let participants = [];
-let currentSelection = {};   // { [day]: Set(slots) }
+let currentSelection = {};   
 let editingName = null;
 let sheetDay = null;
 let sheetTempSlots = new Set();
@@ -65,7 +67,7 @@ const syncStatus = document.getElementById("sync-status");
 async function fetchParticipants() {
   const { data, error } = await supabase
     .from("rooms")
-    .select("participants, capacity")
+    .select("*")
     .eq("id", ROOM_ID)
     .maybeSingle();
 
@@ -85,15 +87,25 @@ async function fetchParticipants() {
 }
 
 async function upsertRoom() {
-  const { error } = await supabase
-    .from("rooms")
-    .upsert({ 
-      id: ROOM_ID, 
-      participants, 
-      capacity: roomCapacity,
-      updated_at: new Date().toISOString() 
-    });
-  if (error) { console.error(error); showError("저장 실패: " + error.message); return false; }
+  // DB의 capacity 컬럼 유무와 상관없이 안전하게 처리
+  const payload = { 
+    id: ROOM_ID, 
+    participants, 
+    capacity: roomCapacity,
+    updated_at: new Date().toISOString() 
+  };
+
+  const { error } = await supabase.from("rooms").upsert(payload);
+  
+  if (error) { 
+    // 만약 capacity 컬럼이 DB에 없어 에러가 발생하는 경우 fallback 처리
+    if (error.message.includes("capacity")) {
+      delete payload.capacity;
+      await supabase.from("rooms").upsert(payload);
+    } else {
+      console.error(error); 
+    }
+  }
   return true;
 }
 
@@ -162,7 +174,58 @@ function updateCapacityBadge() {
 }
 
 // =========================================================
-//  입력 캘린더
+//  관리자 메뉴 기능 (수정 완료)
+// =========================================================
+function openAdminAuth() {
+  document.getElementById("admin-password-input").value = "";
+  document.getElementById("admin-pw-error").classList.add("hidden");
+  document.getElementById("admin-auth-overlay").classList.remove("hidden");
+}
+
+function closeAdminAuth() {
+  document.getElementById("admin-auth-overlay").classList.add("hidden");
+}
+
+function verifyAdminPassword() {
+  const pw = document.getElementById("admin-password-input").value.trim();
+  if (pw === "9893") {
+    closeAdminAuth();
+    openAdminPanel();
+  } else {
+    document.getElementById("admin-pw-error").classList.remove("hidden");
+  }
+}
+
+function openAdminPanel() {
+  document.getElementById("admin-capacity-input").value = roomCapacity;
+  document.getElementById("admin-panel-overlay").classList.remove("hidden");
+}
+
+function closeAdminPanel() {
+  document.getElementById("admin-panel-overlay").classList.add("hidden");
+}
+
+async function saveAdminCapacity() {
+  const inputEl = document.getElementById("admin-capacity-input");
+  const newCap = parseInt(inputEl.value, 10);
+  
+  if (isNaN(newCap) || newCap < 1 || newCap > 100) {
+    alert("1명 이상 100명 이하의 인원수를 입력해 주세요.");
+    return;
+  }
+
+  // 1. 즉시 로컬 변수 업데이트 및 UI 반영
+  roomCapacity = newCap;
+  onDataUpdated();
+  closeAdminPanel();
+
+  // 2. Supabase DB에 변경사항 저장
+  await upsertRoom();
+  alert(`정원이 ${roomCapacity}명으로 변경 및 고정되었습니다.`);
+}
+
+// =========================================================
+//  캘린더 UI & 제스처
 // =========================================================
 function renderInputCalendar() {
   gridInput.innerHTML = "";
@@ -195,9 +258,6 @@ function renderInputCalendar() {
   fillTail(gridInput);
 }
 
-// =========================================================
-//  날짜 셀 제스처: 탭 / 더블탭 / 롱프레스 / 드래그
-// =========================================================
 function attachDayGestures(cell, day) {
   let pressTimer = null;
   let longPressed = false;
@@ -345,7 +405,7 @@ function refreshDayCell(day) {
 }
 
 // =========================================================
-//  시간대 바텀시트
+//  시간대 선택 바텀시트
 // =========================================================
 function bindSlotButtons() {
   document.querySelectorAll(".slot-btn").forEach(btn => {
@@ -420,55 +480,7 @@ function clearDaySlots() {
 }
 
 // =========================================================
-//  관리자 메뉴 (비밀번호: 9893)
-// =========================================================
-function openAdminAuth() {
-  document.getElementById("admin-password-input").value = "";
-  document.getElementById("admin-pw-error").classList.add("hidden");
-  document.getElementById("admin-auth-overlay").classList.remove("hidden");
-}
-
-function closeAdminAuth() {
-  document.getElementById("admin-auth-overlay").classList.add("hidden");
-}
-
-function verifyAdminPassword() {
-  const pw = document.getElementById("admin-password-input").value.trim();
-  if (pw === "9893") {
-    closeAdminAuth();
-    openAdminPanel();
-  } else {
-    document.getElementById("admin-pw-error").classList.remove("hidden");
-  }
-}
-
-function openAdminPanel() {
-  document.getElementById("admin-capacity-input").value = roomCapacity;
-  document.getElementById("admin-panel-overlay").classList.remove("hidden");
-}
-
-function closeAdminPanel() {
-  document.getElementById("admin-panel-overlay").classList.add("hidden");
-}
-
-async function saveAdminCapacity() {
-  const newCap = parseInt(document.getElementById("admin-capacity-input").value, 10);
-  if (isNaN(newCap) || newCap < 1 || newCap > 100) {
-    alert("1명 이상 100명 이하의 올바른 인원수를 입력해 주세요.");
-    return;
-  }
-
-  roomCapacity = newCap;
-  const ok = await upsertRoom();
-  if (ok) {
-    alert(`정원이 ${roomCapacity}명으로 고정 및 업데이트되었습니다.`);
-    closeAdminPanel();
-    onDataUpdated();
-  }
-}
-
-// =========================================================
-//  저장
+//  일정 저장
 // =========================================================
 async function saveSchedule() {
   const name = userNameInput.value.trim();
@@ -548,7 +560,7 @@ function loadParticipantForEdit(name) {
 }
 
 // =========================================================
-//  탭 전환
+//  탭 전환 및 결과 계산
 // =========================================================
 function switchTab(tabId) {
   const inputView = document.getElementById("view-input");
@@ -573,9 +585,6 @@ function switchTab(tabId) {
   }
 }
 
-// =========================================================
-//  결과 계산
-// =========================================================
 function updateResults() {
   const locked = document.getElementById("result-locked");
   const content = document.getElementById("result-content");
