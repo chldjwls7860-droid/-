@@ -1,8 +1,32 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { SUPABASE_URL, SUPABASE_ANON_KEY, CAPACITY as DEFAULT_CAPACITY } from "./config.js";
 
-// ---------- 정원 설정 (기본값 fallback 4) ----------
-let roomCapacity = DEFAULT_CAPACITY || 4; 
+// ---------- 방(room) 식별 ----------
+function getRoomId() {
+  const url = new URL(location.href);
+  let room = url.searchParams.get("room");
+  if (!room) {
+    room = Math.random().toString(36).slice(2, 8);
+    url.searchParams.set("room", room);
+    history.replaceState(null, "", url.toString());
+  }
+  return room;
+}
+const ROOM_ID = getRoomId();
+
+// ---------- LocalStorage 백업 키 ----------
+const STORAGE_CAPACITY_KEY = `room_capacity_${ROOM_ID}`;
+
+// ---------- 정원 초기값 설정 (로컬 스토리지 우선 확인 후 기본값 4) ----------
+function getSavedLocalCapacity() {
+  const saved = localStorage.getItem(STORAGE_CAPACITY_KEY);
+  if (saved && !isNaN(parseInt(saved, 10))) {
+    return parseInt(saved, 10);
+  }
+  return DEFAULT_CAPACITY || 4;
+}
+
+let roomCapacity = getSavedLocalCapacity(); 
 
 // ---------- 달력 설정 (2026년 10월) ----------
 const DAYS_IN_MONTH = 31, FIRST_DAY_OF_WEEK = 4; // 목요일 시작
@@ -24,19 +48,6 @@ function allowedSlots(day) {
 function isSlotAllowed(day, slot) {
   return allowedSlots(day).includes(slot);
 }
-
-// ---------- 방(room) 식별 ----------
-function getRoomId() {
-  const url = new URL(location.href);
-  let room = url.searchParams.get("room");
-  if (!room) {
-    room = Math.random().toString(36).slice(2, 8);
-    url.searchParams.set("room", room);
-    history.replaceState(null, "", url.toString());
-  }
-  return room;
-}
-const ROOM_ID = getRoomId();
 
 // ---------- Supabase 클라이언트 ----------
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -62,7 +73,7 @@ const errorMsg = document.getElementById("error-msg");
 const syncStatus = document.getElementById("sync-status");
 
 // =========================================================
-//  Supabase 연동
+//  Supabase 연동 (정원 유지 보강)
 // =========================================================
 async function fetchParticipants() {
   const { data, error } = await supabase
@@ -71,12 +82,18 @@ async function fetchParticipants() {
     .eq("id", ROOM_ID)
     .maybeSingle();
 
-  if (error) { console.error(error); setSync("오류", "bg-red-500"); return; }
+  if (error) { 
+    console.error(error); 
+    setSync("오류", "bg-red-500"); 
+    return; 
+  }
 
   if (data) {
     participants = Array.isArray(data.participants) ? data.participants : [];
-    if (data.capacity && Number.isInteger(data.capacity)) {
+    // DB에 저장된 capacity가 있으면 최우선 적용 및 LocalStorage 동기화
+    if (data.capacity && Number.isInteger(data.capacity) && data.capacity > 0) {
       roomCapacity = data.capacity;
+      localStorage.setItem(STORAGE_CAPACITY_KEY, roomCapacity);
     }
   } else {
     participants = [];
@@ -87,7 +104,9 @@ async function fetchParticipants() {
 }
 
 async function upsertRoom() {
-  // DB의 capacity 컬럼 유무와 상관없이 안전하게 처리
+  // 로컬 스토리지에 정원 즉시 백업
+  localStorage.setItem(STORAGE_CAPACITY_KEY, roomCapacity);
+
   const payload = { 
     id: ROOM_ID, 
     participants, 
@@ -98,12 +117,11 @@ async function upsertRoom() {
   const { error } = await supabase.from("rooms").upsert(payload);
   
   if (error) { 
-    // 만약 capacity 컬럼이 DB에 없어 에러가 발생하는 경우 fallback 처리
+    console.error("Supabase 저장 오류:", error.message);
+    // capacity 컬럼 미생성 시 2차 시도
     if (error.message.includes("capacity")) {
       delete payload.capacity;
       await supabase.from("rooms").upsert(payload);
-    } else {
-      console.error(error); 
     }
   }
   return true;
@@ -122,6 +140,7 @@ function subscribeRealtime() {
           }
           if (payload.new.capacity && Number.isInteger(payload.new.capacity)) {
             roomCapacity = payload.new.capacity;
+            localStorage.setItem(STORAGE_CAPACITY_KEY, roomCapacity);
           }
           onDataUpdated();
         }
@@ -153,6 +172,7 @@ async function init() {
   bindGlobalDragEnd();
   switchTab("input");
   setSync("연결 중…", "bg-indigo-500/60");
+  updateCapacityBadge(); // 저장된 로컬 정원값으로 초기 표시
   await fetchParticipants();
   subscribeRealtime();
 }
@@ -174,7 +194,7 @@ function updateCapacityBadge() {
 }
 
 // =========================================================
-//  관리자 메뉴 기능 (수정 완료)
+//  관리자 메뉴 기능 (비밀번호 9893)
 // =========================================================
 function openAdminAuth() {
   document.getElementById("admin-password-input").value = "";
@@ -214,14 +234,17 @@ async function saveAdminCapacity() {
     return;
   }
 
-  // 1. 즉시 로컬 변수 업데이트 및 UI 반영
+  // 1. 상태 및 로컬스토리지 저장
   roomCapacity = newCap;
+  localStorage.setItem(STORAGE_CAPACITY_KEY, roomCapacity);
+  
+  // 2. UI 즉시 반영
   onDataUpdated();
   closeAdminPanel();
 
-  // 2. Supabase DB에 변경사항 저장
+  // 3. Supabase DB 저장
   await upsertRoom();
-  alert(`정원이 ${roomCapacity}명으로 변경 및 고정되었습니다.`);
+  alert(`정원이 ${roomCapacity}명으로 성공적으로 변경되어 계속 유지됩니다.`);
 }
 
 // =========================================================
