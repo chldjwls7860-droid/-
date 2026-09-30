@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { SUPABASE_URL, SUPABASE_ANON_KEY, CAPACITY } from "./config.js";
+import { SUPABASE_URL, SUPABASE_ANON_KEY, CAPACITY as DEFAULT_CAPACITY } from "./config.js";
 
 // ---------- 달력 설정 (2026년 10월) ----------
 const DAYS_IN_MONTH = 31, FIRST_DAY_OF_WEEK = 4; // 목요일 시작
@@ -8,7 +8,6 @@ const SLOT_LABEL = { morning: "오전", afternoon: "오후", evening: "저녁" }
 const DOW = ["일","월","화","수","목","금","토"];
 
 // ---------- 요일/시간대 제한 ----------
-// 평일(월~금)은 저녁만 선택 가능, 주말(토·일)은 전부 가능
 function dowOf(day) {
   return (FIRST_DAY_OF_WEEK + day - 1) % 7; // 0:일 ... 6:토
 }
@@ -16,7 +15,6 @@ function isWeekend(day) {
   const d = dowOf(day);
   return d === 0 || d === 6;
 }
-// 해당 날짜에 선택 가능한 시간대 배열
 function allowedSlots(day) {
   return isWeekend(day) ? SLOTS : ["evening"];
 }
@@ -41,7 +39,7 @@ const ROOM_ID = getRoomId();
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ---------- 상태 ----------
-// participants: [{ name, dates: { [day]: ["morning", ...] } }]
+let roomCapacity = DEFAULT_CAPACITY || 4; // 동적 정원 (기본값)
 let participants = [];
 let currentSelection = {};   // { [day]: Set(slots) }
 let editingName = null;
@@ -49,10 +47,10 @@ let sheetDay = null;
 let sheetTempSlots = new Set();
 
 // ---------- 드래그 선택 상태 ----------
-let dragActive = false;    // 실제로 드래그가 발동했는지
-let dragStartDay = null;   // 드래그 시작 날짜
-let dragMode = "add";      // "add" | "remove"
-let pointerDown = false;   // 포인터가 눌린 상태인지
+let dragActive = false;    
+let dragStartDay = null;   
+let dragMode = "add";      
+let pointerDown = false;   
 
 // ---------- DOM ----------
 const gridInput = document.getElementById("calendar-grid");
@@ -67,13 +65,21 @@ const syncStatus = document.getElementById("sync-status");
 async function fetchParticipants() {
   const { data, error } = await supabase
     .from("rooms")
-    .select("participants")
+    .select("participants, capacity")
     .eq("id", ROOM_ID)
     .maybeSingle();
 
   if (error) { console.error(error); setSync("오류", "bg-red-500"); return; }
 
-  participants = (data && Array.isArray(data.participants)) ? data.participants : [];
+  if (data) {
+    participants = Array.isArray(data.participants) ? data.participants : [];
+    if (data.capacity && Number.isInteger(data.capacity)) {
+      roomCapacity = data.capacity;
+    }
+  } else {
+    participants = [];
+  }
+
   setSync("동기화됨", "bg-green-500/70");
   onDataUpdated();
 }
@@ -81,7 +87,12 @@ async function fetchParticipants() {
 async function upsertRoom() {
   const { error } = await supabase
     .from("rooms")
-    .upsert({ id: ROOM_ID, participants, updated_at: new Date().toISOString() });
+    .upsert({ 
+      id: ROOM_ID, 
+      participants, 
+      capacity: roomCapacity,
+      updated_at: new Date().toISOString() 
+    });
   if (error) { console.error(error); showError("저장 실패: " + error.message); return false; }
   return true;
 }
@@ -93,9 +104,13 @@ function subscribeRealtime() {
       "postgres_changes",
       { event: "*", schema: "public", table: "rooms", filter: `id=eq.${ROOM_ID}` },
       (payload) => {
-        const next = payload.new && payload.new.participants;
-        if (Array.isArray(next)) {
-          participants = next;
+        if (payload.new) {
+          if (Array.isArray(payload.new.participants)) {
+            participants = payload.new.participants;
+          }
+          if (payload.new.capacity && Number.isInteger(payload.new.capacity)) {
+            roomCapacity = payload.new.capacity;
+          }
           onDataUpdated();
         }
       }
@@ -106,14 +121,14 @@ function subscribeRealtime() {
 }
 
 function setSync(text, colorClass) {
+  if (!syncStatus) return;
   syncStatus.innerText = text;
   syncStatus.className = "text-[11px] px-2 py-0.5 rounded-full text-white " + colorClass;
 }
 
-// 데이터가 바뀔 때마다 화면 갱신
 function onDataUpdated() {
   updateCapacityBadge();
-  const resultVisible = !document.getElementById("view-result").classList.contains("hidden");
+  const resultVisible = !document.getElementById("view-result")?.classList.contains("hidden");
   if (resultVisible) updateResults();
 }
 
@@ -131,15 +146,18 @@ async function init() {
 }
 
 function updateCapacityBadge() {
-  document.getElementById("capacity-badge").innerText = `${participants.length} / ${CAPACITY}`;
+  const badge = document.getElementById("capacity-badge");
+  if (badge) badge.innerText = `${participants.length} / ${roomCapacity}`;
+
   const label = document.getElementById("submit-label");
   const btn = document.getElementById("submit-btn");
-  if (participants.length >= CAPACITY && !editingName) {
-    label.innerText = "정원 마감 (기존 이름으로 수정 가능)";
-    btn.classList.add("opacity-90");
+
+  if (participants.length >= roomCapacity && !editingName) {
+    if (label) label.innerText = "정원 마감 (기존 이름으로 수정 가능)";
+    if (btn) btn.classList.add("opacity-90");
   } else {
-    label.innerText = editingName ? `"${editingName}" 일정 수정하기` : "내 일정 등록하기";
-    btn.classList.remove("opacity-90");
+    if (label) label.innerText = editingName ? `"${editingName}" 일정 수정하기` : "내 일정 등록하기";
+    if (btn) btn.classList.remove("opacity-90");
   }
 }
 
@@ -179,10 +197,6 @@ function renderInputCalendar() {
 
 // =========================================================
 //  날짜 셀 제스처: 탭 / 더블탭 / 롱프레스 / 드래그
-//  - 단일 탭     → 시간대 선택 시트 열기
-//  - 더블탭      → 하루 전체(허용된 시간대) 토글
-//  - 롱프레스    → 하루 전체(허용된 시간대) 토글
-//  - 누르고 드래그 → 인접한 여러 날을 한 번에 (허용된 시간대) 선택/해제
 // =========================================================
 function attachDayGestures(cell, day) {
   let pressTimer = null;
@@ -191,7 +205,7 @@ function attachDayGestures(cell, day) {
   let startX = 0, startY = 0;
   const LONG_PRESS_MS = 500;
   const DOUBLE_TAP_MS = 300;
-  const DRAG_THRESHOLD = 12; // 이 픽셀 이상 움직이면 드래그로 판정
+  const DRAG_THRESHOLD = 12;
 
   const beginPress = (x, y) => {
     longPressed = false;
@@ -200,15 +214,13 @@ function attachDayGestures(cell, day) {
     dragActive = false;
     dragStartDay = day;
 
-    // 드래그 시작 시점의 상태로 add/remove 모드 결정
-    // (허용된 시간대가 모두 채워져 있으면 remove 모드)
     const cur = currentSelection[day];
     const allowed = allowedSlots(day);
     const full = cur && allowed.every(s => cur.has(s)) && cur.size === allowed.length;
     dragMode = full ? "remove" : "add";
 
     pressTimer = setTimeout(() => {
-      if (dragActive) return; // 이미 드래그 중이면 롱프레스 무시
+      if (dragActive) return;
       longPressed = true;
       toggleAllSlots(day);
       if (navigator.vibrate) navigator.vibrate(30);
@@ -219,10 +231,9 @@ function attachDayGestures(cell, day) {
     if (!pointerDown) return;
     const moved = Math.abs(x - startX) + Math.abs(y - startY);
     if (!dragActive && moved > DRAG_THRESHOLD) {
-      // 드래그 시작
       dragActive = true;
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-      applyDragTo(dragStartDay); // 시작 칸부터 적용
+      applyDragTo(dragStartDay);
     }
     if (dragActive) {
       const overDay = dayFromPoint(x, y);
@@ -235,7 +246,6 @@ function attachDayGestures(cell, day) {
     pointerDown = false;
   };
 
-  // ----- 터치 -----
   cell.addEventListener("touchstart", (e) => {
     const t = e.touches[0];
     beginPress(t.clientX, t.clientY);
@@ -243,22 +253,20 @@ function attachDayGestures(cell, day) {
 
   cell.addEventListener("touchmove", (e) => {
     const t = e.touches[0];
-    if (dragActive) e.preventDefault(); // 드래그 중 스크롤 방지
+    if (dragActive) e.preventDefault();
     movePress(t.clientX, t.clientY);
   }, { passive: false });
 
   cell.addEventListener("touchend", endPress);
   cell.addEventListener("touchcancel", endPress);
 
-  // ----- 마우스 -----
   cell.addEventListener("mousedown", (e) => beginPress(e.clientX, e.clientY));
   cell.addEventListener("mousemove", (e) => movePress(e.clientX, e.clientY));
   cell.addEventListener("mouseup", endPress);
 
-  // ----- 클릭(탭/더블탭) : 드래그·롱프레스가 아니었을 때만 -----
   cell.addEventListener("click", () => {
-    if (dragActive) { dragActive = false; return; }   // 드래그였으면 무시
-    if (longPressed) { longPressed = false; return; }  // 롱프레스였으면 무시
+    if (dragActive) { dragActive = false; return; }
+    if (longPressed) { longPressed = false; return; }
     const now = Date.now();
     if (now - lastTapTime < DOUBLE_TAP_MS) {
       lastTapTime = 0;
@@ -275,7 +283,6 @@ function attachDayGestures(cell, day) {
   });
 }
 
-// 좌표 아래에 있는 날짜 셀의 날짜 번호를 반환
 function dayFromPoint(x, y) {
   const el = document.elementFromPoint(x, y);
   if (!el) return null;
@@ -284,21 +291,18 @@ function dayFromPoint(x, y) {
   return null;
 }
 
-// 드래그 모드(add/remove)에 따라 특정 날짜에 적용 (허용된 시간대만)
 function applyDragTo(day) {
   if (dragMode === "add") currentSelection[day] = new Set(allowedSlots(day));
   else delete currentSelection[day];
   refreshDayCell(day);
 }
 
-// 시작 날짜 ~ 현재 날짜 범위 전체에 적용
 function applyDragRange(currentDay) {
   const from = Math.min(dragStartDay, currentDay);
   const to = Math.max(dragStartDay, currentDay);
   for (let d = from; d <= to; d++) applyDragTo(d);
 }
 
-// 포인터를 화면 어디서 떼든 드래그 종료 처리
 function bindGlobalDragEnd() {
   const stop = () => { pointerDown = false; };
   window.addEventListener("mouseup", stop);
@@ -306,7 +310,6 @@ function bindGlobalDragEnd() {
   window.addEventListener("touchcancel", stop);
 }
 
-// 하루의 (허용된) 모든 시간대를 한 번에 선택/해제
 function toggleAllSlots(day) {
   const allowed = allowedSlots(day);
   const cur = currentSelection[day];
@@ -348,25 +351,23 @@ function bindSlotButtons() {
   document.querySelectorAll(".slot-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       const s = btn.dataset.slot;
-      // 평일 잠금: 허용되지 않은 시간대는 무시
       if (sheetDay != null && !isSlotAllowed(sheetDay, s)) return;
       sheetTempSlots.has(s) ? sheetTempSlots.delete(s) : sheetTempSlots.add(s);
       paintSheetButtons();
     });
   });
 }
+
 function paintSheetButtons() {
   document.querySelectorAll(".slot-btn").forEach(btn => {
     const slot = btn.dataset.slot;
     const allowed = sheetDay == null ? true : isSlotAllowed(sheetDay, slot);
     const active = sheetTempSlots.has(slot);
 
-    // 활성/비활성 스타일
     btn.classList.toggle("border-indigo-600", allowed && active);
     btn.classList.toggle("bg-indigo-50", allowed && active);
     btn.classList.toggle("border-gray-200", allowed && !active);
 
-    // 잠금(비활성) 스타일
     if (!allowed) {
       btn.classList.add("opacity-40", "cursor-not-allowed", "border-gray-200");
       btn.classList.remove("border-indigo-600", "bg-indigo-50");
@@ -377,9 +378,9 @@ function paintSheetButtons() {
     }
   });
 }
+
 function openTimeSheet(day) {
   sheetDay = day;
-  // 허용된 시간대만 남겨서 초기화 (평일에 저장된 오전/오후가 있어도 제거)
   const allowed = allowedSlots(day);
   const base = currentSelection[day] ? [...currentSelection[day]] : [];
   sheetTempSlots = new Set(base.filter(s => allowed.includes(s)));
@@ -393,6 +394,7 @@ function openTimeSheet(day) {
   sheet.classList.remove("hidden");
   requestAnimationFrame(() => sheet.classList.remove("sheet-hidden"));
 }
+
 function closeTimeSheet() {
   const sheet = document.getElementById("time-sheet");
   sheet.classList.add("sheet-hidden");
@@ -401,8 +403,8 @@ function closeTimeSheet() {
     document.getElementById("sheet-overlay").classList.add("hidden");
   }, 250);
 }
+
 function confirmTimeSheet() {
-  // 허용된 시간대만 저장 (안전장치)
   const allowed = allowedSlots(sheetDay);
   const cleaned = [...sheetTempSlots].filter(s => allowed.includes(s));
   if (cleaned.length > 0) currentSelection[sheetDay] = new Set(cleaned);
@@ -410,10 +412,59 @@ function confirmTimeSheet() {
   refreshDayCell(sheetDay);
   closeTimeSheet();
 }
+
 function clearDaySlots() {
   delete currentSelection[sheetDay];
   refreshDayCell(sheetDay);
   closeTimeSheet();
+}
+
+// =========================================================
+//  관리자 메뉴 (비밀번호: 9893)
+// =========================================================
+function openAdminAuth() {
+  document.getElementById("admin-password-input").value = "";
+  document.getElementById("admin-pw-error").classList.add("hidden");
+  document.getElementById("admin-auth-overlay").classList.remove("hidden");
+}
+
+function closeAdminAuth() {
+  document.getElementById("admin-auth-overlay").classList.add("hidden");
+}
+
+function verifyAdminPassword() {
+  const pw = document.getElementById("admin-password-input").value.trim();
+  if (pw === "9893") {
+    closeAdminAuth();
+    openAdminPanel();
+  } else {
+    document.getElementById("admin-pw-error").classList.remove("hidden");
+  }
+}
+
+function openAdminPanel() {
+  document.getElementById("admin-capacity-input").value = roomCapacity;
+  document.getElementById("admin-panel-overlay").classList.remove("hidden");
+}
+
+function closeAdminPanel() {
+  document.getElementById("admin-panel-overlay").classList.add("hidden");
+}
+
+async function saveAdminCapacity() {
+  const newCap = parseInt(document.getElementById("admin-capacity-input").value, 10);
+  if (isNaN(newCap) || newCap < 1 || newCap > 100) {
+    alert("1명 이상 100명 이하의 올바른 인원수를 입력해 주세요.");
+    return;
+  }
+
+  roomCapacity = newCap;
+  const ok = await upsertRoom();
+  if (ok) {
+    alert(`정원이 ${roomCapacity}명으로 고정 및 업데이트되었습니다.`);
+    closeAdminPanel();
+    onDataUpdated();
+  }
 }
 
 // =========================================================
@@ -424,17 +475,15 @@ async function saveSchedule() {
   if (!name) { showError("이름을 입력해주세요."); userNameInput.focus(); return; }
   if (Object.keys(currentSelection).length === 0) { showError("가능한 날짜와 시간을 선택해주세요."); return; }
 
-  // 최신 상태 기준으로 정원 검사 (동시 편집 대비)
   await fetchParticipants();
 
   const idx = participants.findIndex(p => p.name === name);
   const isNew = idx === -1;
-  if (isNew && participants.length >= CAPACITY) {
-    showError(`정원(${CAPACITY}명)이 모두 찼습니다. 기존 참가자 이름으로만 수정할 수 있습니다.`);
+  if (isNew && participants.length >= roomCapacity) {
+    showError(`정원(${roomCapacity}명)이 모두 찼습니다. 기존 참가자 이름으로만 수정할 수 있습니다.`);
     return;
   }
 
-  // 저장 직전에도 평일 오전/오후 제거(안전장치)
   const datesObj = {};
   Object.keys(currentSelection).forEach(d => {
     const allowed = allowedSlots(Number(d));
@@ -460,7 +509,12 @@ async function saveSchedule() {
   setTimeout(() => document.getElementById("modal-content").classList.remove("scale-95"), 10);
 }
 
-function showError(msg) { errorMsg.innerText = msg; errorMsg.classList.remove("hidden"); }
+function showError(msg) { 
+  if (errorMsg) {
+    errorMsg.innerText = msg; 
+    errorMsg.classList.remove("hidden"); 
+  }
+}
 
 function closeModalAndShowResult() {
   const modal = document.getElementById("modal-overlay");
@@ -482,7 +536,6 @@ function loadParticipantForEdit(name) {
   userNameInput.value = name;
   currentSelection = {};
   Object.keys(p.dates).forEach(d => {
-    // 불러올 때도 평일 오전/오후는 제외
     const allowed = allowedSlots(Number(d));
     const cleaned = (p.dates[d] || []).filter(s => allowed.includes(s));
     if (cleaned.length > 0) currentSelection[d] = new Set(cleaned);
@@ -507,13 +560,13 @@ function switchTab(tabId) {
   if (tabId === "input") {
     inputView.classList.remove("hidden");
     resultView.classList.add("hidden");
-    fab.classList.remove("hidden");
+    if (fab) fab.classList.remove("hidden");
     tabInput.className = "flex-1 py-3 text-sm font-semibold text-indigo-600 border-b-2 border-indigo-600 transition-colors";
     tabResult.className = "flex-1 py-3 text-sm font-semibold text-gray-500 border-b-2 border-transparent transition-colors";
   } else {
     inputView.classList.add("hidden");
     resultView.classList.remove("hidden");
-    fab.classList.add("hidden");
+    if (fab) fab.classList.add("hidden");
     tabResult.className = "flex-1 py-3 text-sm font-semibold text-indigo-600 border-b-2 border-indigo-600 transition-colors";
     tabInput.className = "flex-1 py-3 text-sm font-semibold text-gray-500 border-b-2 border-transparent transition-colors";
     updateResults();
@@ -535,6 +588,7 @@ function updateResults() {
   locked.classList.add("hidden");
   content.classList.remove("hidden");
   document.getElementById("participant-count").innerText = participants.length;
+  document.getElementById("participant-total-capacity").innerText = roomCapacity;
 
   const pList = document.getElementById("participant-list");
   pList.innerHTML = "";
@@ -553,7 +607,6 @@ function updateResults() {
   }
   participants.forEach(p => {
     Object.keys(p.dates).forEach(d => {
-      // 결과 계산에서도 평일 오전/오후는 무시(안전장치)
       const allowed = allowedSlots(Number(d));
       const slots = (p.dates[d] || []).filter(s => allowed.includes(s));
       if (slots.length > 0) dayCounts[d]++;
@@ -579,8 +632,8 @@ function updateResults() {
   if (fullSlots.length > 0) {
     bestContainer.classList.remove("hidden");
     noMatch.classList.add("hidden");
-    bestTitle.innerText = total >= CAPACITY
-      ? `추천 시간 (${CAPACITY}명 전원 참석 가능)`
+    bestTitle.innerText = total >= roomCapacity
+      ? `추천 시간 (${roomCapacity}명 전원 참석 가능)`
       : `추천 시간 (현재 ${total}명 전원 참석 가능)`;
     bestList.innerHTML = "";
     fullSlots.forEach(({ day, slot }) => {
@@ -592,9 +645,9 @@ function updateResults() {
   } else {
     bestContainer.classList.add("hidden");
     noMatch.classList.remove("hidden");
-    noMatch.innerText = total >= CAPACITY
-      ? "아직 전원이 함께 가능한 시간대가 없습니다. 일부 참가자가 일정을 조정하면 다시 확인해 보세요."
-      : `현재 ${total}/${CAPACITY}명이 등록했습니다. ${CAPACITY}명이 모두 등록되면 전원 가능한 시간을 계산합니다.`;
+    noMatch.innerText = total >= roomCapacity
+      ? `아직 ${roomCapacity}명 전원이 함께 가능한 시간대가 없습니다. 일부 참가자가 일정을 조정하면 다시 확인해 보세요.`
+      : `현재 ${total}/${roomCapacity}명이 등록했습니다. ${roomCapacity}명이 모두 등록되면 전원 가능한 시간을 계산합니다.`;
   }
 }
 
@@ -648,15 +701,14 @@ async function shareRoom() {
   } catch (e) {}
 }
 
-// ---------- 도움말 ----------
 function openHelp() {
-  document.getElementById("help-overlay").classList.remove("hidden");
+  document.getElementById("help-overlay")?.classList.remove("hidden");
 }
 function closeHelp(e) {
-  document.getElementById("help-overlay").classList.add("hidden");
+  document.getElementById("help-overlay")?.classList.add("hidden");
 }
 
-// ---------- HTML onclick 에서 호출되므로 전역 노출 ----------
+// ---------- HTML 전역 노출 ----------
 window.switchTab = switchTab;
 window.saveSchedule = saveSchedule;
 window.closeModalAndShowResult = closeModalAndShowResult;
@@ -666,5 +718,10 @@ window.closeTimeSheet = closeTimeSheet;
 window.shareRoom = shareRoom;
 window.openHelp = openHelp;
 window.closeHelp = closeHelp;
+window.openAdminAuth = openAdminAuth;
+window.closeAdminAuth = closeAdminAuth;
+window.verifyAdminPassword = verifyAdminPassword;
+window.closeAdminPanel = closeAdminPanel;
+window.saveAdminCapacity = saveAdminCapacity;
 
 init();
