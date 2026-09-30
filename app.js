@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { SUPABASE_URL, SUPABASE_ANON_KEY, CAPACITY as DEFAULT_CAPACITY } from "./config.js";
+import { SUPABASE_URL, SUPABASE_ANON_KEY, CAPACITY as CONFIG_CAPACITY } from "./config.js";
 
 // ---------- 방(room) 식별 ----------
 function getRoomId() {
@@ -17,13 +17,16 @@ const ROOM_ID = getRoomId();
 // ---------- LocalStorage 백업 키 ----------
 const STORAGE_CAPACITY_KEY = `room_capacity_${ROOM_ID}`;
 
-// ---------- 정원 초기값 설정 (로컬 스토리지 우선 확인 후 기본값 4) ----------
+// ---------- 기본 정원 설정 (기본값: 8명) ----------
+const DEFAULT_CAPACITY = CONFIG_CAPACITY || 8;
+
+// ---------- 정원 초기값 설정 (로컬 스토리지 우선 확인 후 기본값 8) ----------
 function getSavedLocalCapacity() {
   const saved = localStorage.getItem(STORAGE_CAPACITY_KEY);
   if (saved && !isNaN(parseInt(saved, 10))) {
     return parseInt(saved, 10);
   }
-  return DEFAULT_CAPACITY || 4;
+  return DEFAULT_CAPACITY;
 }
 
 let roomCapacity = getSavedLocalCapacity(); 
