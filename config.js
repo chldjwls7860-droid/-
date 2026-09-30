@@ -3,4 +3,4 @@ export const SUPABASE_URL = "https://vxojrnooikxkaaivnoql.supabase.co";
 export const SUPABASE_ANON_KEY = "sb_publishable_4mJX0vuXLrH8u0fQYFgQ4g_WfUz9be6";
 
 // 앱 상수
-export const CAPACITY = 4; // 정원
+export const CAPACITY = 8; // 정원
