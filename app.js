@@ -58,7 +58,7 @@ function getDateKey(day, monthConfig = MONTHS[currentMonthIndex]) {
   return `${monthConfig.year}-${monthConfig.month}-${day}`;
 }
 
-// 과거 호환성 변환 (기존 10월 데이터인 '15' 등을 '2026-10-15'로 변환)
+// 과거 호환성 변환
 function normalizeDateKey(key) {
   if (!key.includes('-')) return `2026-10-${key}`;
   return key;
@@ -69,10 +69,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ---------- 상태 ----------
 let participants = [];
-let currentSelection = {};   // { "2026-10-1": Set, ... }
+let currentSelection = {};
 let editingName = null;
 let sheetDay = null;
 let sheetTempSlots = new Set();
+let targetToDelete = null; // 삭제할 참가자 이름
 
 // ---------- 드래그 선택 상태 ----------
 let dragActive = false;    
@@ -434,7 +435,7 @@ function clearDaySlots() {
 }
 
 // =========================================================
-//  일정 저장
+//  일정 저장 및 삭제
 // =========================================================
 async function saveSchedule() {
   const name = userNameInput.value.trim();
@@ -450,7 +451,6 @@ async function saveSchedule() {
 
   const datesObj = {};
   Object.keys(currentSelection).forEach(key => {
-    // 키 형식 파싱: "2026-10-15"
     const [y, m, d] = key.split('-').map(Number);
     const monthConfig = MONTHS.find(mon => mon.year === y && mon.month === m);
     if (monthConfig) {
@@ -499,7 +499,7 @@ function loadParticipantForEdit(name) {
   currentSelection = {};
   
   Object.keys(p.dates).forEach(rawKey => {
-    const key = normalizeDateKey(rawKey); // 구 버전 데이터 호환
+    const key = normalizeDateKey(rawKey); 
     const [y, m, d] = key.split('-').map(Number);
     const monthConfig = MONTHS.find(mon => mon.year === y && mon.month === m);
     if (monthConfig) {
@@ -516,8 +516,44 @@ function loadParticipantForEdit(name) {
   window.scrollTo(0, 0);
 }
 
+// ----------------- 일정 삭제 로직 -----------------
+function promptDeleteParticipant(name) {
+  targetToDelete = name;
+  document.getElementById("delete-target-name").innerText = name;
+  document.getElementById("delete-confirm-overlay").classList.remove("hidden");
+  if (navigator.vibrate) navigator.vibrate(50);
+}
+
+function closeDeleteConfirm() {
+  targetToDelete = null;
+  document.getElementById("delete-confirm-overlay").classList.add("hidden");
+}
+
+async function executeDeleteParticipant() {
+  if (!targetToDelete) return;
+  
+  // 데이터 배열에서 삭제
+  participants = participants.filter(p => p.name !== targetToDelete);
+  
+  // DB 업데이트
+  await upsertRoom();
+  
+  // 만약 현재 수정 중이던 사람이 삭제되었다면 입력 폼 초기화
+  if (editingName === targetToDelete) {
+      editingName = null;
+      userNameInput.value = "";
+      currentSelection = {};
+      document.getElementById("edit-hint").classList.add("hidden");
+      updateMonthUI();
+  }
+  
+  closeDeleteConfirm();
+  onDataUpdated();
+}
+
+
 // =========================================================
-//  탭 전환 및 결과 계산 (다중 월 전체 검색)
+//  탭 전환 및 결과 계산
 // =========================================================
 function switchTab(tabId) {
   const inputView = document.getElementById("view-input");
@@ -551,16 +587,48 @@ function updateResults() {
 
   const pList = document.getElementById("participant-list");
   pList.innerHTML = "";
+  
   participants.forEach(p => {
     const badge = document.createElement("button");
-    badge.className = "px-3 py-1 bg-white border border-indigo-200 text-indigo-800 rounded-full text-xs font-semibold shadow-sm active:scale-95 transition";
+    badge.className = "participant-badge px-3 py-1 bg-white border border-indigo-200 text-indigo-800 rounded-full text-xs font-semibold shadow-sm active:scale-95 transition";
     badge.innerHTML = `${p.name} <span class="text-indigo-400">✎</span>`;
-    badge.onclick = () => loadParticipantForEdit(p.name);
+    
+    // --- 배지 이벤트 바인딩 (짧은 터치: 수정 / 길게 누르기: 삭제) ---
+    let isLongPress = false;
+    let pressTimer = null;
+    
+    const startPress = () => {
+      isLongPress = false;
+      pressTimer = setTimeout(() => {
+        isLongPress = true;
+        promptDeleteParticipant(p.name);
+      }, 600); // 0.6초 길게 누르면 실행
+    };
+    
+    const cancelPress = () => {
+      if (pressTimer) clearTimeout(pressTimer);
+    };
+
+    badge.addEventListener("touchstart", startPress, { passive: true });
+    badge.addEventListener("touchend", cancelPress);
+    badge.addEventListener("touchcancel", cancelPress);
+    badge.addEventListener("mousedown", startPress);
+    badge.addEventListener("mouseup", cancelPress);
+    badge.addEventListener("mouseleave", cancelPress);
+    
+    // 모바일 등에서 길게 눌렀을 때 기본 메뉴(복사 등) 뜨는 것 방지
+    badge.oncontextmenu = (e) => e.preventDefault();
+
+    badge.onclick = (e) => {
+      if (isLongPress) return; // 길게 눌러서 팝업이 뜬 거면 클릭 이벤트(수정 이동) 방지
+      loadParticipantForEdit(p.name);
+    };
+
     pList.appendChild(badge);
   });
 
   const total = participants.length;
-  const fullSlots = []; // 전체 4개월에서 교집합을 모을 배열
+  const fullSlots = [];
 
   MONTHS.forEach((monthConfig, mIdx) => {
     const dayCounts = {}, slotCounts = {};
@@ -583,12 +651,10 @@ function updateResults() {
       });
     });
 
-    // 화면(히트맵)은 현재 선택된 월만 렌더링
     if (mIdx === currentMonthIndex) {
       renderHeatmap(dayCounts, total, monthConfig);
     }
 
-    // 전원 참석 가능한 슬롯 찾기
     for (let d = 1; d <= monthConfig.days; d++) {
       const key = `${monthConfig.year}-${monthConfig.month}-${d}`;
       SLOTS.forEach(s => {
@@ -599,7 +665,6 @@ function updateResults() {
     }
   });
 
-  // 추천 시간대 출력
   const bestContainer = document.getElementById("best-dates-container");
   const bestList = document.getElementById("best-dates-list");
   const bestTitle = document.getElementById("best-title");
@@ -699,5 +764,7 @@ window.closeAdminAuth = closeAdminAuth;
 window.verifyAdminPassword = verifyAdminPassword;
 window.closeAdminPanel = closeAdminPanel;
 window.saveAdminCapacity = saveAdminCapacity;
+window.closeDeleteConfirm = closeDeleteConfirm;
+window.executeDeleteParticipant = executeDeleteParticipant;
 
 init();
