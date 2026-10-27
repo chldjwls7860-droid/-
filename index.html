@@ -10,11 +10,9 @@
         body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
         * { -webkit-tap-highlight-color: transparent; }
 
-        /* 개별 셀: 눌렀을 때 살짝 줄어드는 피드백 */
         .calendar-cell { transition: all 0.15s ease-in-out; }
         .calendar-cell:active { transform: scale(0.95); }
 
-        /* 입력 캘린더 그리드: 드래그(세로 포함)가 스크롤로 가로채이지 않도록 */
         #calendar-grid, #calendar-grid *, #result-grid {
             touch-action: none;
             -webkit-user-select: none;
@@ -30,8 +28,14 @@
         #time-sheet { transition: transform 0.25s ease-out; }
         .sheet-hidden { transform: translateY(100%); }
         .safe-bottom { padding-bottom: calc(1.25rem + env(safe-area-inset-bottom)); }
-
         .slot-btn:disabled { pointer-events: none; }
+        
+        /* 길게 누르기 시 텍스트 선택 방지 */
+        .participant-badge {
+            -webkit-user-select: none;
+            user-select: none;
+            touch-action: manipulation;
+        }
     </style>
 </head>
 <body class="text-gray-800 antialiased min-h-screen flex justify-center">
@@ -69,7 +73,6 @@
             </div>
 
             <div>
-                <!-- 월 이동 네비게이션 (입력) -->
                 <div class="flex justify-between items-center mb-4">
                     <div class="flex items-center gap-3 bg-gray-100 px-3 py-1.5 rounded-full">
                         <button onclick="changeMonth(-1)" id="btn-prev-month" class="w-7 h-7 flex items-center justify-center rounded-full bg-white shadow-sm hover:bg-gray-50 active:scale-95 transition text-gray-700">◀</button>
@@ -114,12 +117,11 @@
             <div id="result-content" class="hidden space-y-6">
                 <div class="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
                     <h3 class="font-bold text-indigo-900 mb-1">현재 참여 인원: <span id="participant-count" class="text-indigo-600 text-xl">0</span> / <span id="participant-total-capacity">0</span>명</h3>
-                    <p class="text-xs text-indigo-500 mb-2">이름을 탭하면 해당 참가자의 일정을 수정할 수 있어요.</p>
+                    <p class="text-xs text-indigo-500 mb-2">이름을 탭하면 수정하고, <b>길게 누르면 삭제</b>할 수 있어요.</p>
                     <div id="participant-list" class="flex flex-wrap gap-2 mt-2"></div>
                 </div>
 
                 <div>
-                    <!-- 월 이동 네비게이션 (결과) -->
                     <div class="flex justify-between items-center mb-4">
                         <h2 class="text-lg font-bold text-gray-800">가장 많이 겹치는 날짜</h2>
                         <div class="flex items-center gap-2 bg-gray-100 px-2 py-1 rounded-full">
@@ -173,6 +175,7 @@
     </div>
 </div>
 
+<!-- 바텀시트, 팝업 등 (기존 유지) -->
 <div id="sheet-overlay" class="fixed inset-0 bg-black bg-opacity-40 z-40 hidden" onclick="closeTimeSheet()"></div>
 <div id="time-sheet" class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md bg-white rounded-t-3xl z-50 sheet-hidden safe-bottom px-5 pt-3 shadow-2xl">
     <div class="w-10 h-1.5 bg-gray-300 rounded-full mx-auto mb-4"></div>
@@ -206,7 +209,19 @@
     </div>
 </div>
 
-<!-- 도움말 모달 등 하단 팝업 유지 -->
+<!-- (신규) 참가자 일정 삭제 확인 모달 -->
+<div id="delete-confirm-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex justify-center items-center">
+    <div class="bg-white p-6 rounded-2xl max-w-sm w-11/12 shadow-2xl">
+        <h3 class="text-lg font-bold text-center text-gray-900 mb-2">🗑️ 일정 삭제</h3>
+        <p class="text-sm text-gray-500 text-center mb-6"><span id="delete-target-name" class="font-bold text-red-500"></span>님의 일정을 정말 삭제할까요?</p>
+        <div class="flex gap-2">
+            <button onclick="closeDeleteConfirm()" class="flex-1 py-3 rounded-xl border border-gray-300 text-gray-600 font-semibold active:scale-95">취소</button>
+            <button onclick="executeDeleteParticipant()" class="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold active:scale-95">삭제</button>
+        </div>
+    </div>
+</div>
+
+<!-- 도움말 -->
 <div id="help-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex justify-center items-end sm:items-center" onclick="closeHelp(event)">
     <div class="bg-white w-full max-w-md rounded-t-3xl sm:rounded-2xl shadow-2xl max-h-[85vh] overflow-y-auto safe-bottom" onclick="event.stopPropagation()">
         <div class="sticky top-0 bg-white px-5 pt-4 pb-3 border-b border-gray-100 flex items-center justify-between">
@@ -216,13 +231,16 @@
         <div class="px-5 py-4 space-y-5 text-sm text-gray-700">
             <div><p class="font-bold text-indigo-700 mb-1">1. 이름 입력</p><p>본인 이름을 입력하세요. 같은 이름으로 다시 등록하면 기존 일정이 수정됩니다.</p></div>
             <div>
-                <p class="font-bold text-indigo-700 mb-1">2. 날짜·시간 선택 및 달 이동</p>
-                <p>상단의 <b>◀ ▶ 화살표</b>를 눌러 다른 달(10~1월)의 일정도 입력할 수 있습니다. 날짜를 한 번 탭하면 시간 선택창이 뜹니다.</p>
+                <p class="font-bold text-indigo-700 mb-1">2. 날짜·시간 선택</p>
+                <p>상단의 <b>◀ ▶ 화살표</b>를 눌러 다른 달(10~1월)의 일정도 입력할 수 있습니다.</p>
                 <p class="mt-2 bg-amber-50 rounded-lg px-3 py-2">🔒 <b>평일은 저녁만</b> 고를 수 있습니다.</p>
                 <p class="mt-2 bg-indigo-50 rounded-lg px-3 py-2">💡 <b>길게 누르거나 두 번 탭:</b> 하루 전체를 한 번에 선택/해제합니다.</p>
                 <p class="mt-2 bg-green-50 rounded-lg px-3 py-2">🖐️ <b>누른 채 드래그:</b> 여러 날을 쓱 지나가며 한 번에 선택합니다.</p>
             </div>
-            <div><p class="font-bold text-indigo-700 mb-1">3. 결과 확인</p><p>종합 결과에서 달을 넘겨가며 어느 날짜에 몇 명이 되는지 히트맵으로 볼 수 있습니다.</p></div>
+            <div>
+                <p class="font-bold text-indigo-700 mb-1">3. 수정과 삭제</p>
+                <p>결과 화면에서 <b>이름을 짧게 탭하면 수정</b>할 수 있고, <b>길게 누르면 삭제</b>할 수 있습니다.</p>
+            </div>
         </div>
         <div class="px-5 pb-5">
             <button onclick="closeHelp()" class="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl active:scale-95">확인했어요</button>
@@ -230,6 +248,7 @@
     </div>
 </div>
 
+<!-- 관리자 인증 -->
 <div id="admin-auth-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex justify-center items-center">
     <div class="bg-white p-6 rounded-2xl max-w-sm w-11/12 shadow-2xl">
         <h3 class="text-lg font-bold text-center text-gray-900 mb-2">🔒 관리자 인증</h3>
