@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>10월 일정 조율</title>
+    <title>모임 일정 조율 (10월~1월)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -15,8 +15,8 @@
         .calendar-cell:active { transform: scale(0.95); }
 
         /* 입력 캘린더 그리드: 드래그(세로 포함)가 스크롤로 가로채이지 않도록 */
-        #calendar-grid, #calendar-grid * {
-            touch-action: none;              /* 세로 드래그도 셀 선택으로 처리 */
+        #calendar-grid, #calendar-grid *, #result-grid {
+            touch-action: none;
             -webkit-user-select: none;
             user-select: none;
         }
@@ -31,7 +31,6 @@
         .sheet-hidden { transform: translateY(100%); }
         .safe-bottom { padding-bottom: calc(1.25rem + env(safe-area-inset-bottom)); }
 
-        /* 시간 선택 버튼 비활성(평일 오전/오후 잠금) */
         .slot-btn:disabled { pointer-events: none; }
     </style>
 </head>
@@ -39,7 +38,7 @@
 
 <div class="w-full max-w-md bg-white min-h-screen shadow-xl relative overflow-hidden flex flex-col">
     <header class="bg-indigo-600 text-white p-5 shadow-md z-10">
-        <h1 class="text-xl font-bold text-center">📅 10월 모임 일정 조율</h1>
+        <h1 class="text-xl font-bold text-center">📅 모임 일정 조율 (10월~1월)</h1>
         <p class="text-indigo-200 text-sm text-center mt-1">참석 가능한 날짜·시간을 모두 선택해주세요</p>
         <div class="flex items-center justify-center gap-2 mt-2 flex-wrap">
             <p class="text-indigo-100 text-xs">정원 <span id="capacity-badge" class="font-bold">0 / 0</span>명</p>
@@ -61,20 +60,25 @@
                 <label for="userName" class="block text-sm font-medium text-gray-700 mb-2">이름을 입력하세요</label>
                 <input type="text" id="userName" placeholder="홍길동" autocomplete="off"
                     class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all text-base">
-                <p id="edit-hint" class="text-xs text-indigo-600 mt-2 hidden">✏️️ 기존 참가자를 수정 중입니다. 등록하면 덮어씁니다.</p>
+                <p id="edit-hint" class="text-xs text-indigo-600 mt-2 hidden">✏ 기존 참가자를 수정 중입니다. 등록하면 덮어씁니다.</p>
             </div>
 
-            <!-- 평일 잠금 안내 배너 -->
             <div class="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5 text-xs text-amber-800">
                 <span class="text-sm leading-none mt-0.5">🔒</span>
                 <span><b>평일(월~금)은 저녁만</b> 선택할 수 있어요. 오전·오후는 <b>주말(토·일)</b>에만 고를 수 있습니다.</span>
             </div>
 
             <div>
+                <!-- 월 이동 네비게이션 (입력) -->
                 <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-lg font-bold text-gray-800">2026년 10월</h2>
+                    <div class="flex items-center gap-3 bg-gray-100 px-3 py-1.5 rounded-full">
+                        <button onclick="changeMonth(-1)" id="btn-prev-month" class="w-7 h-7 flex items-center justify-center rounded-full bg-white shadow-sm hover:bg-gray-50 active:scale-95 transition text-gray-700">◀</button>
+                        <h2 id="current-month-title-input" class="text-sm font-bold text-gray-800 w-24 text-center">26년 10월</h2>
+                        <button onclick="changeMonth(1)" id="btn-next-month" class="w-7 h-7 flex items-center justify-center rounded-full bg-white shadow-sm hover:bg-gray-50 active:scale-95 transition text-gray-700">▶</button>
+                    </div>
                     <span class="text-xs font-medium bg-indigo-100 text-indigo-800 px-2 py-1 rounded-full">탭 · 드래그로 선택</span>
                 </div>
+                
                 <div class="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-sm">
                     <div class="grid grid-cols-7 bg-gray-50 border-b border-gray-200">
                         <div class="py-2 text-center text-xs font-semibold text-red-500">일</div>
@@ -115,7 +119,16 @@
                 </div>
 
                 <div>
-                    <h2 class="text-lg font-bold text-gray-800 mb-4">가장 많이 겹치는 날짜</h2>
+                    <!-- 월 이동 네비게이션 (결과) -->
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-lg font-bold text-gray-800">가장 많이 겹치는 날짜</h2>
+                        <div class="flex items-center gap-2 bg-gray-100 px-2 py-1 rounded-full">
+                            <button onclick="changeMonth(-1)" id="btn-prev-month-res" class="w-6 h-6 text-[10px] flex items-center justify-center rounded-full bg-white shadow-sm hover:bg-gray-50 active:scale-95 transition text-gray-700">◀</button>
+                            <h2 id="current-month-title-res" class="text-xs font-bold text-gray-800 w-16 text-center">26년 10월</h2>
+                            <button onclick="changeMonth(1)" id="btn-next-month-res" class="w-6 h-6 text-[10px] flex items-center justify-center rounded-full bg-white shadow-sm hover:bg-gray-50 active:scale-95 transition text-gray-700">▶</button>
+                        </div>
+                    </div>
+
                     <div class="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-sm">
                         <div class="grid grid-cols-7 bg-gray-50 border-b border-gray-200">
                             <div class="py-2 text-center text-xs font-semibold text-red-500">일</div>
@@ -193,7 +206,7 @@
     </div>
 </div>
 
-<!-- 도움말 모달 -->
+<!-- 도움말 모달 등 하단 팝업 유지 -->
 <div id="help-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex justify-center items-end sm:items-center" onclick="closeHelp(event)">
     <div class="bg-white w-full max-w-md rounded-t-3xl sm:rounded-2xl shadow-2xl max-h-[85vh] overflow-y-auto safe-bottom" onclick="event.stopPropagation()">
         <div class="sticky top-0 bg-white px-5 pt-4 pb-3 border-b border-gray-100 flex items-center justify-between">
@@ -201,33 +214,15 @@
             <button onclick="closeHelp()" class="w-8 h-8 rounded-full bg-gray-100 text-gray-500 active:scale-90 flex items-center justify-center text-lg">✕</button>
         </div>
         <div class="px-5 py-4 space-y-5 text-sm text-gray-700">
+            <div><p class="font-bold text-indigo-700 mb-1">1. 이름 입력</p><p>본인 이름을 입력하세요. 같은 이름으로 다시 등록하면 기존 일정이 수정됩니다.</p></div>
             <div>
-                <p class="font-bold text-indigo-700 mb-1">1. 이름 입력</p>
-                <p>먼저 본인 이름을 입력하세요. 같은 이름으로 다시 등록하면 기존 일정이 수정됩니다.</p>
+                <p class="font-bold text-indigo-700 mb-1">2. 날짜·시간 선택 및 달 이동</p>
+                <p>상단의 <b>◀ ▶ 화살표</b>를 눌러 다른 달(10~1월)의 일정도 입력할 수 있습니다. 날짜를 한 번 탭하면 시간 선택창이 뜹니다.</p>
+                <p class="mt-2 bg-amber-50 rounded-lg px-3 py-2">🔒 <b>평일은 저녁만</b> 고를 수 있습니다.</p>
+                <p class="mt-2 bg-indigo-50 rounded-lg px-3 py-2">💡 <b>길게 누르거나 두 번 탭:</b> 하루 전체를 한 번에 선택/해제합니다.</p>
+                <p class="mt-2 bg-green-50 rounded-lg px-3 py-2">🖐️ <b>누른 채 드래그:</b> 여러 날을 쓱 지나가며 한 번에 선택합니다.</p>
             </div>
-            <div>
-                <p class="font-bold text-indigo-700 mb-1">2. 날짜·시간 선택</p>
-                <p>날짜를 <b>한 번 탭</b>하면 시간대를 고르는 창이 뜹니다. 가능한 시간대를 모두 선택하고 확인을 누르세요.</p>
-                <p class="mt-2 bg-amber-50 rounded-lg px-3 py-2">🔒 <b>평일(월~금)은 저녁만</b> 선택할 수 있습니다. 오전·오후 버튼은 평일에 비활성화되며, 드래그나 두 번 탭으로 하루 전체를 선택해도 평일에는 <b>저녁만</b> 채워집니다. 오전·오후는 <b>주말(토·일)</b>에만 고를 수 있어요.</p>
-                <p class="mt-2 bg-indigo-50 rounded-lg px-3 py-2">💡 <b>하루 전체</b>를 한 번에 고르려면: 날짜를 <b>길게 누르거나(약 0.5초) 두 번 연속 탭</b>하세요. 이미 다 선택된 날에 같은 동작을 하면 전부 해제됩니다.</p>
-                <p class="mt-2 bg-green-50 rounded-lg px-3 py-2">🖐️ <b>여러 날을 한 번에</b> 고르려면: 한 날짜를 <b>누른 채 손가락을 옆으로 쓸어(드래그)</b> 지나가는 날들을 한 번에 선택하세요. 시작한 날이 이미 선택돼 있으면 드래그가 <b>지우기</b>로 동작합니다.</p>
-            </div>
-            <div>
-                <p class="font-bold text-indigo-700 mb-1">3. 등록하기</p>
-                <p>맨 아래 "내 일정 등록하기" 버튼을 누르면 저장됩니다. 정원이 차면 새 사람은 등록할 수 없고 기존 인원만 수정할 수 있어요.</p>
-            </div>
-            <div>
-                <p class="font-bold text-indigo-700 mb-1">4. 결과 보기 & 수정</p>
-                <p>"종합 결과 보기" 탭에서 히트맵으로 겹치는 날짜를 확인할 수 있습니다. 진할수록 가능한 사람이 많다는 뜻이에요. 참가자 이름을 탭하면 그 사람의 일정을 다시 고칠 수 있습니다.</p>
-            </div>
-            <div>
-                <p class="font-bold text-indigo-700 mb-1">5. 전원 가능 시간</p>
-                <p>모두가 함께 가능한 "날짜 + 시간대"가 있으면 초록색 영역에 정리되어 표시됩니다.</p>
-            </div>
-            <div>
-                <p class="font-bold text-indigo-700 mb-1">6. 친구 초대</p>
-                <p>헤더의 "🔗 방 공유"로 링크를 보내면, 받은 사람도 같은 방에 실시간으로 참여할 수 있습니다.</p>
-            </div>
+            <div><p class="font-bold text-indigo-700 mb-1">3. 결과 확인</p><p>종합 결과에서 달을 넘겨가며 어느 날짜에 몇 명이 되는지 히트맵으로 볼 수 있습니다.</p></div>
         </div>
         <div class="px-5 pb-5">
             <button onclick="closeHelp()" class="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl active:scale-95">확인했어요</button>
@@ -235,7 +230,6 @@
     </div>
 </div>
 
-<!-- 관리자 비밀번호 입력 모달 -->
 <div id="admin-auth-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex justify-center items-center">
     <div class="bg-white p-6 rounded-2xl max-w-sm w-11/12 shadow-2xl">
         <h3 class="text-lg font-bold text-center text-gray-900 mb-2">🔒 관리자 인증</h3>
@@ -250,7 +244,6 @@
     </div>
 </div>
 
-<!-- 관리자 정원 설정 모달 -->
 <div id="admin-panel-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex justify-center items-center">
     <div class="bg-white p-6 rounded-2xl max-w-sm w-11/12 shadow-2xl">
         <h3 class="text-lg font-bold text-center text-gray-900 mb-2">⚙️ 정원 관리</h3>
